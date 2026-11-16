@@ -2,8 +2,10 @@
 // reasoning.js — Problemas de razonamiento (sin lápiz, ilustrados)
 // Cada generador recibe el nivel (1..6) y sube la dificultad.
 // =============================================================
-import { ri, nz, pick, chance, shuffle, S, soles, num, choice, T, Q, M, qHTML, gcd } from './util.js';
+import { ri, nz, pick, chance, shuffle, S, P, soles, num, choice, T, Q, M, qHTML, gcd } from './util.js';
 import * as V from './viz.js';
+import { autoSteps } from './topics_a.js';
+import { parse, evalQ } from './expr.js';
 
 const R = [];
 const add = (id, name, icon, w, gen, extra = {}) => R.push({ id, name, icon, w, gen, ...extra });
@@ -125,18 +127,46 @@ add('sombreado', 'Fracción sombreada', '◩', 2, (L) => {
   return { q: '¿Qué fracción está pintada? Simplifícala.', ill: V.shadedGrid(r, c, cells), ans: num(q), traps: [T(new Q(k, tot - k), 'frac_simpl', 'El denominador es el <b>total</b> de cuadritos, no los que no están pintados.')], steps: [{ note: `Pintados: ${k}, total: ${tot} → ${M(`${k}/${tot}`)}` }, { note: `Simplificada: ${qHTML(q)}` }] };
 });
 
-// 9. Operación inventada
-add('operacion', 'Operación inventada', '★', 3, (L) => {
-  const forms = [
-    ['a★b = 2a + b', (a, b) => 2 * a + b], ['a★b = a² − b', (a, b) => a * a - b], ['a★b = ab − a', (a, b) => a * b - a],
-    ['a★b = 3a − 2b', (a, b) => 3 * a - 2 * b], ['a★b = (a + b)²', (a, b) => (a + b) ** 2], ['a★b = a·b + a + b', (a, b) => a * b + a + b],
+// 9. Operación inventada (con pasos detallados y errores típicos)
+const OPS = [
+  { txt: 'a★b = 2a + b', spec: '2*A+B', how: 'el doble del primero, más el segundo',
+    traps: (a, b) => [T(2 * (a + b), 'jerarquia', `Solo la <b>a</b> se multiplica por 2: es 2·(${S(a)}) + (${S(b)}), no 2·(${S(a)} + ${S(b)}).`)] },
+  { txt: 'a★b = a² − b', spec: 'A^2-B', how: 'el primero al cuadrado, menos el segundo',
+    traps: (a, b) => [T(2 * a - b, 'pot_base', `a² es a·a = ${S(a)}·${S(a)}, no 2·${S(a)}.`), T(a < 0 ? -(a * a) - b : null, 'neg_base', `(${S(a)})² es <b>positivo</b>: ${a * a}. Usa paréntesis al reemplazar.`), T(a * a + b, 'signo_suma', `Es <b>menos</b> el segundo: ${a * a} − (${S(b)}).`)] },
+  { txt: 'a★b = ab − a', spec: 'A*B-A', how: 'el producto de los dos, menos el primero',
+    traps: (a, b) => [T(a * b - b, 'razon', 'Se resta el <b>primero</b> (a), no el segundo.'), T(a * b + a, 'signo_suma', `Revisa el signo al restar ${S(a)}.`)] },
+  { txt: 'a★b = 3a − 2b', spec: '3*A-2*B', how: 'el triple del primero, menos el doble del segundo',
+    traps: (a, b) => [T(3 * a + 2 * b, 'signo_mult', `−2·(${S(b)}) = ${S(-2 * b)}. Cuida el signo.`), T(3 * a - 2 + b, 'jerarquia', 'El 2 multiplica a la b: 2b = 2·b.')] },
+  { txt: 'a★b = (a + b)²', spec: '(A+B)^2', how: 'súmalos y eleva el resultado al cuadrado',
+    traps: (a, b) => [T(a * a + b * b, 'binomio2', `Elevaste cada número por separado (${S(a)}² + ${S(b)}²). Pero (a + b)² ≠ a² + b²: <b>primero suma dentro del paréntesis</b> (${S(a)} + ${S(b)} = ${S(a + b)}) y luego eleva. Faltaron los dos rectángulos del medio (2·a·b = ${S(2 * a * b)}).`, `${M(`${P(a)}^2+${P(b)}^2`)} = ${a * a + b * b} ✗`), T(2 * (a + b), 'pot_base', `Elevar al cuadrado no es multiplicar por 2: es ${S(a + b)}·${S(a + b)}.`)] },
+  { txt: 'a★b = a·b + a + b', spec: 'A*B+A+B', how: 'el producto, más los dos números',
+    traps: (a, b) => [T(a * b, 'razon', 'Faltó sumar a y b al producto.')] },
+];
+const fill = (spec, a, b) => spec.replace(/A/g, P(a)).replace(/B/g, P(b));
+function opSteps(o, a, b) {
+  const sub = fill(o.spec, a, b);
+  return [
+    { note: `La ★ es una regla inventada: <b>${o.how}</b>. El número de la izquierda va en <b>a</b> y el de la derecha en <b>b</b>.` },
+    { html: `${M(o.spec.replace(/A/g, 'a').replace(/B/g, 'b'))} → ${M(sub)}`, note: `Reemplaza a = ${S(a)} y b = ${S(b)} (pon paréntesis si son negativos).` },
+    ...autoSteps(sub).slice(0, -1),
+    { note: `Resultado: <b>${S(evalNum(sub))}</b>` },
   ];
-  const [txt, f] = pick(forms); const a = L >= 3 ? nz(-5, 6) : ri(1, 6), b = L >= 3 ? nz(-5, 6) : ri(1, 6);
+}
+const evalNum = (spec) => { const q = evalQ(parse(spec)); return q.n / q.d; };
+add('operacion', 'Operación inventada', '★', 3, (L) => {
+  const o = pick(OPS);
+  const a = L >= 3 ? nz(-5, 6) : ri(1, 6), b = L >= 3 ? nz(-5, 6) : ri(1, 6);
+  const f = (x, y) => evalNum(fill(o.spec, x, y));
+  const viz = o.spec === '(A+B)^2' && a > 0 && b > 0 ? V.areaModel([`${a}`, `${b}`], [`${a}`, `${b}`], [[`${a * a}`, `${a * b}`], [`${a * b}`, `${b * b}`]], `Cuadrado de lado ${a} + ${b} = ${a + b}: ${a * a} + ${a * b} + ${a * b} + ${b * b} = ${(a + b) ** 2}`) : '';
   if (L >= 5) {
     const c = ri(1, 4); const inner = f(a, b); const r = f(inner, c);
-    return { q: `Si <b>${txt}</b>, calcula <b>(${S(a)}★${S(b)})★${c}</b>`, ans: num(r), traps: [], steps: [{ note: `Primero ${S(a)}★${S(b)} = ${S(inner)}` }, { note: `Luego ${S(inner)}★${c} = <b>${S(r)}</b>` }] };
+    return { q: `Si <b>${o.txt}</b>, calcula <b>(${S(a)}★${S(b)})★${c}</b>`, ans: num(r), traps: [],
+      steps: [{ note: 'Primero el paréntesis: ' + `${S(a)}★${S(b)}` }, ...opSteps(o, a, b).slice(1), { note: `Ahora usa ese resultado como <b>a</b>: ${S(inner)}★${c}` }, ...opSteps(o, inner, c).slice(1)] };
   }
-  return { q: `Si <b>${txt}</b>, calcula <b>${S(a)}★${S(b)}</b>`, ans: num(f(a, b)), traps: [T(f(b, a), 'razon', 'El primero ocupa el lugar de <b>a</b> y el segundo el de <b>b</b>.')], steps: [{ note: `Reemplaza a = ${S(a)} y b = ${S(b)} (con paréntesis si son negativos).` }, { note: `= <b>${S(f(a, b))}</b>` }] };
+  const r = f(a, b);
+  return { q: `Si <b>${o.txt}</b>, calcula <b>${S(a)}★${S(b)}</b>`, ans: num(r),
+    traps: [...o.traps(a, b), T(f(b, a), 'razon', `Cambiaste el orden: el primero (${S(a)}) va en <b>a</b> y el segundo (${S(b)}) en <b>b</b>.`)],
+    steps: opSteps(o, a, b), viz };
 });
 
 // 10. Pienso un número (operaciones inversas)

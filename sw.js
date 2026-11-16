@@ -1,5 +1,5 @@
 // Service worker: guarda la app para usarla sin internet.
-const CACHE = 'mate-v1.0.1';
+const CACHE = 'mate-v1.0.2';
 const FILES = ['./', './index.html', './manifest.webmanifest', './css/app.css',
   './js/app.js', './js/engine.js', './js/expr.js', './js/mathinput.js', './js/check.js', './js/viz.js', './js/util.js',
   './js/topics_a.js', './js/topics_b.js', './js/reasoning.js',
