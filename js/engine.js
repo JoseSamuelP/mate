@@ -6,6 +6,7 @@ import { TOPICS_A } from './topics_a.js';
 import { TOPICS_B } from './topics_b.js';
 import { REASONING } from './reasoning.js';
 import { BANK, BANK_NAME } from './bank_diag.js';
+import { CURSO, CURSO_BY } from './curso.js';
 
 export const TOPICS = [...TOPICS_A, ...TOPICS_B];
 export const TOPIC = Object.fromEntries(TOPICS.map((t) => [t.id, t]));
@@ -44,7 +45,7 @@ export const EXAMS = [
 const KEY = 'mate-pre-esan-v1';
 const blank = () => ({
   v: 1, created: Date.now(), settings: { goal: 30, tren: false },
-  topics: {}, bank: {}, reason: { level: 1, hist: [] }, log: [], days: {}, streakDays: 0, lastDay: null, best: 0,
+  topics: {}, bank: {}, curso: {}, reason: { level: 1, hist: [] }, log: [], days: {}, streakDays: 0, lastDay: null, best: 0,
 });
 let S = null;
 export function load() {
@@ -91,16 +92,25 @@ export function record(p, res) {
   let approvedNow = null;
   if (p.isBank) {
     const b = bstate(p.bank.id); b.n++; if (res.ok) b.ok++; b.last = !!res.ok; b.choice = res.choice ?? null; b.t = Date.now();
-  } else if (p.isReason) {
+  }
+  if (p.isCurso) {
+    const c = cstate(p.cursoTema); c.n++; if (res.ok) c.ok++;
+    if (p.cursoLvl === c.lvl && !c.done) {
+      if (res.ok && !res.hints) c.streak++; else if (!res.ok) c.streak = 0;
+      if (c.lvl < 2 && c.streak >= LEVEL_UP) { c.lvl++; c.streak = 0; approvedNow = { cursoUp: c.lvl, tema: p.cursoTema }; }
+      else if (c.lvl === 2 && res.ok) { c.examOk = (c.examOk || 0) + 1; if (c.examOk >= EXAM_DONE) { c.done = true; c.doneAt = Date.now(); approvedNow = { cursoDone: p.cursoTema }; } }
+    }
+  }
+  if (p.isReason) {
     st.reason.hist.push(score); if (st.reason.hist.length > 20) st.reason.hist.shift();
     const h = st.reason.hist.slice(-10);
     if (h.length >= 8 && h.reduce((a, b) => a + b, 0) >= 7 && st.reason.level < 6) { st.reason.level++; st.reason.hist = []; approvedNow = { reasonLevel: st.reason.level }; }
     else if (h.length >= 8 && h.reduce((a, b) => a + b, 0) <= 3 && st.reason.level > 1) { st.reason.level--; st.reason.hist = []; }
-  } else {
+  } else if (TOPIC[p.topic]) {
     const t = tstate(p.topic); t.n++; if (res.ok) t.ok++;
     t.hist.push(score); if (t.hist.length > 30) t.hist.shift();
     const m = mastery(p.topic);
-    if (!t.approved && m.n >= APPROVE_N && m.score >= APPROVE_SCORE && score > 0) { t.approved = true; t.approvedAt = Date.now(); d.approved.push(p.topic); approvedNow = { topic: p.topic }; }
+    if (!t.approved && m.n >= APPROVE_N && m.score >= APPROVE_SCORE && score > 0) { t.approved = true; t.approvedAt = Date.now(); d.approved.push(p.topic); approvedNow = approvedNow || { topic: p.topic }; }
   }
   // racha de días
   const k = today();
@@ -152,7 +162,8 @@ export function nextProblem(session) {
   for (let tries = 0; tries < 15; tries++) {
     let p;
     if (session.kind === 'bank') { const id = session.queue.shift(); return id == null ? null : bankProblem(BANK.find((b) => b.id === id)); }
-    if (session.kind === 'topic') p = makeProblem(session.topic, { tren, variant: session.variant });
+    if (session.kind === 'curso') p = makeCurso(session.tema);
+    else if (session.kind === 'topic') p = makeProblem(session.topic, { tren, variant: session.variant });
     else if (session.kind === 'reason') p = makeReason();
     else if (session.kind === 'exam') {
       const ex = EXAMS.find((e) => e.id === session.exam);
@@ -165,9 +176,9 @@ export function nextProblem(session) {
       const approved = PATH.filter((id) => tstate(id).approved);
       const r = Math.random();
       const curOk = cur && (!tren || TOPIC[cur].variants.some((v) => isMental(TOPIC[cur], v)));
-      if (r < 0.15) p = bankProblem(pickBank());
-      else if (r < 0.35) p = makeReason();
-      else if (r < 0.45 && approved.length) {
+      if (r < 0.25) { const ct = nextCursoTema(); p = ct ? makeCurso(ct) : bankProblem(pickBank()); }
+      else if (r < 0.45) p = makeReason();
+      else if (r < 0.6 && approved.length) {
         const pool = tren ? approved.filter((id) => TOPIC[id].variants.some((v) => isMental(TOPIC[id], v))) : approved;
         p = pool.length ? makeProblem(wpick(pool, (id) => 0.3 + (1 - mastery(id).pct) + recentErrRate(id)), { tren }) : makeReason();
       } else if (curOk) p = makeProblem(cur, { tren });
@@ -224,6 +235,35 @@ export function bankStats() {
   return { answered, ok, errors, total: BANK.length, temas, secs };
 }
 export { BANK, BANK_NAME };
+
+// ---------------- Cursos por tema (Aprender) ----------------
+export const LEVEL_UP = 3, EXAM_DONE = 4;
+export const LEVEL_NAMES = ['Fácil', 'Medio', 'Tipo examen'];
+export { CURSO, CURSO_BY };
+export function cstate(tema) { const st = load(); if (!st.curso) st.curso = {}; if (!st.curso[tema]) st.curso[tema] = { lvl: 0, streak: 0, n: 0, ok: 0, examOk: 0, done: false, lesson: false }; return st.curso[tema]; }
+export function cursoProgress(tema) { const c = cstate(tema); return c.done ? 1 : (c.lvl + (c.lvl < 2 ? c.streak / LEVEL_UP : (c.examOk || 0) / EXAM_DONE)) / 3; }
+// Orden sugerido: Aritmética (la base) → Álgebra → Geometría
+const SEC_OF = (tema) => (BANK.find((b) => b.tema === tema) || {}).sec;
+export const CURSO_ORDER = ['Aritmética', 'Álgebra', 'Geometría'].flatMap((sec) => CURSO.filter((t) => SEC_OF(t.tema) === sec));
+export function nextCursoTema() {
+  const started = CURSO_ORDER.find((t) => { const c = cstate(t.tema); return c.n > 0 && !c.done; });
+  return (started || CURSO_ORDER.find((t) => !cstate(t.tema).done) || {}).tema || null;
+}
+export function makeCurso(tema) {
+  const t = CURSO_BY[tema]; const c = cstate(tema);
+  const lvl = c.done ? Math.floor(Math.random() * 3) : c.lvl;
+  let p;
+  if (lvl === 2 && !c.done) {
+    const pend = (t.bank || []).map((id) => BANK.find((b) => b.id === id)).filter((b) => b && bstate(b.id).last !== true);
+    if (pend.length && Math.random() < 0.5) p = bankProblem(pend[0]);
+  }
+  if (!p) {
+    const g = t.levels[lvl];
+    p = typeof g === 'function' ? g() : g;
+    if (p && p.topic && !p.q) p = makeProblem(p.topic, { variant: p.variant });
+  }
+  return { mode: 'lapiz', variant: 'c' + lvl, ...p, topic: p.topic || 'curso', isCurso: true, cursoTema: tema, cursoLvl: lvl, topicName: `${tema} · ${LEVEL_NAMES[lvl]}`, lessonHTML: t.lesson };
+}
 
 function recentErrRate(id) {
   const h = tstate(id).hist.slice(-6); if (!h.length) return 0.5;
