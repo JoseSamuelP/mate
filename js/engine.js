@@ -5,6 +5,7 @@
 import { TOPICS_A } from './topics_a.js';
 import { TOPICS_B } from './topics_b.js';
 import { REASONING } from './reasoning.js';
+import { BANK, BANK_NAME } from './bank_diag.js';
 
 export const TOPICS = [...TOPICS_A, ...TOPICS_B];
 export const TOPIC = Object.fromEntries(TOPICS.map((t) => [t.id, t]));
@@ -43,7 +44,7 @@ export const EXAMS = [
 const KEY = 'mate-pre-esan-v1';
 const blank = () => ({
   v: 1, created: Date.now(), settings: { goal: 30, tren: false },
-  topics: {}, reason: { level: 1, hist: [] }, log: [], days: {}, streakDays: 0, lastDay: null, best: 0,
+  topics: {}, bank: {}, reason: { level: 1, hist: [] }, log: [], days: {}, streakDays: 0, lastDay: null, best: 0,
 });
 let S = null;
 export function load() {
@@ -88,7 +89,9 @@ export function record(p, res) {
   d.n++; if (res.ok) d.ok++; d.ms += Math.min(res.ms || 0, 300000);
   const bi = Math.floor((d.n - 1) / 10); d.blocks[bi] = (d.blocks[bi] || 0) + (res.ok ? 1 : 0);
   let approvedNow = null;
-  if (p.isReason) {
+  if (p.isBank) {
+    const b = bstate(p.bank.id); b.n++; if (res.ok) b.ok++; b.last = !!res.ok; b.choice = res.choice ?? null; b.t = Date.now();
+  } else if (p.isReason) {
     st.reason.hist.push(score); if (st.reason.hist.length > 20) st.reason.hist.shift();
     const h = st.reason.hist.slice(-10);
     if (h.length >= 8 && h.reduce((a, b) => a + b, 0) >= 7 && st.reason.level < 6) { st.reason.level++; st.reason.hist = []; approvedNow = { reasonLevel: st.reason.level }; }
@@ -148,6 +151,7 @@ export function nextProblem(session) {
   const st = load(); const tren = session.tren;
   for (let tries = 0; tries < 15; tries++) {
     let p;
+    if (session.kind === 'bank') { const id = session.queue.shift(); return id == null ? null : bankProblem(BANK.find((b) => b.id === id)); }
     if (session.kind === 'topic') p = makeProblem(session.topic, { tren, variant: session.variant });
     else if (session.kind === 'reason') p = makeReason();
     else if (session.kind === 'exam') {
@@ -161,7 +165,8 @@ export function nextProblem(session) {
       const approved = PATH.filter((id) => tstate(id).approved);
       const r = Math.random();
       const curOk = cur && (!tren || TOPIC[cur].variants.some((v) => isMental(TOPIC[cur], v)));
-      if (r < 0.25) p = makeReason();
+      if (r < 0.15) p = bankProblem(pickBank());
+      else if (r < 0.35) p = makeReason();
       else if (r < 0.45 && approved.length) {
         const pool = tren ? approved.filter((id) => TOPIC[id].variants.some((v) => isMental(TOPIC[id], v))) : approved;
         p = pool.length ? makeProblem(wpick(pool, (id) => 0.3 + (1 - mastery(id).pct) + recentErrRate(id)), { tren }) : makeReason();
@@ -180,6 +185,46 @@ export function nextProblem(session) {
   }
   return session.kind === 'reason' ? makeReason() : makeProblem(session.topic || currentTopic() || 'signos_suma');
 }
+// ---------------- Banco del examen diagnóstico ----------------
+export function bstate(id) { const st = load(); if (!st.bank) st.bank = {}; if (!st.bank[id]) st.bank[id] = { n: 0, ok: 0, last: null }; return st.bank[id]; }
+const LETTERS = ['a', 'b', 'c', 'd'];
+const escB = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+export function bankProblem(item) {
+  const traps = Object.entries(item.t || {}).map(([i, why]) => `<div class="errrow" data-trap="${i}"><span><b>${LETTERS[i]})</b> ${escB(item.o[i])}</span></div><div class="mute small" style="margin:-2px 0 6px">${escB(why)}</div>`).join('');
+  return {
+    q: `<span class="mute small">Pregunta ${item.id} · ${item.sec}</span><br>${escB(item.q)}`,
+    ans: { type: 'choice', opts: item.o.map((o, i) => `${LETTERS[i]}) ${escB(o)}`), correct: item.c },
+    steps: [{ note: `<b>Qué significa:</b> ${escB(item.concepto)}` }, ...item.pasos.map((x) => ({ note: escB(x) })), { note: `<b>Comprobación:</b> ${escB(item.comp)}` }],
+    extra: traps ? `<div style="margin-top:10px"><b>Trampas (por qué las otras están mal):</b></div>${traps}` : '',
+    trapFor: (i) => (item.t && item.t[i]) || null,
+    bank: item, isBank: true, topic: 'bank', variant: 'b' + item.id, mode: 'mental', ctx: false,
+    topicName: `${BANK_NAME} · ${item.tema}`,
+  };
+}
+// Prioridad: sin responder > fallada > ya acertada
+function pickBank() {
+  return wpick(BANK, (b) => { const s = bstate(b.id); return s.n === 0 ? 3 : s.last === false ? 4 : 0.3; });
+}
+export function bankQueue(mode, tema) {
+  const st = (b) => bstate(b.id);
+  if (mode === 'sim') return BANK.map((b) => b.id);
+  if (mode === 'errors') return BANK.filter((b) => st(b).last === false).map((b) => b.id);
+  if (mode === 'tema') { const L = BANK.filter((b) => b.tema === tema); return [...L.filter((b) => st(b).last !== true), ...L.filter((b) => st(b).last === true)].map((b) => b.id); }
+  const pend = BANK.filter((b) => st(b).last !== true);
+  return (pend.length ? pend : BANK).map((b) => b.id);
+}
+export function bankStats() {
+  const temas = {}; const secs = {};
+  let answered = 0, ok = 0, errors = 0;
+  BANK.forEach((b) => {
+    const s = bstate(b.id);
+    for (const [map, key] of [[temas, b.tema], [secs, b.sec]]) { map[key] = map[key] || { total: 0, done: 0, ok: 0, sec: b.sec }; map[key].total++; if (s.n) { map[key].done++; if (s.last) map[key].ok++; } }
+    if (s.n) { answered++; if (s.last) ok++; else errors++; }
+  });
+  return { answered, ok, errors, total: BANK.length, temas, secs };
+}
+export { BANK, BANK_NAME };
+
 function recentErrRate(id) {
   const h = tstate(id).hist.slice(-6); if (!h.length) return 0.5;
   return 1 - h.reduce((a, b) => a + b, 0) / h.length;

@@ -24,7 +24,7 @@ p { margin: .5em 0; }
 
 /* ---------- Navegación inferior ---------- */
 .nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px); border-top: 1px solid var(--line); padding-bottom: var(--safe-b); }
-.nav-in { max-width: 560px; margin: 0 auto; display: grid; grid-template-columns: repeat(4, 1fr); }
+.nav-in { max-width: 560px; margin: 0 auto; display: grid; grid-template-columns: repeat(5, 1fr); }
 .nav button { padding: 9px 0 8px; display: flex; flex-direction: column; align-items: center; gap: 2px; color: var(--mute); font-size: 11.5px; }
 .nav button .ic { font-size: 21px; line-height: 1; }
 .nav button.on { color: var(--acc); }

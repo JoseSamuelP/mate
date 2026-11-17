@@ -32,7 +32,7 @@ const bar = (p, cls = '') => `<div class="bar ${cls}"><i style="width:${Math.rou
 function fmtDate(s) { const d = new Date(s + 'T12:00:00'); return d.toLocaleDateString('es-PE', { weekday: 'short', day: 'numeric', month: 'short' }); }
 
 // ---------- navegación ----------
-const TABS = [['home', '🏠', 'Hoy'], ['path', '🗺️', 'Ruta'], ['notebook', '✎', 'Libreta'], ['me', '📊', 'Yo']];
+const TABS = [['home', '🏠', 'Hoy'], ['bank', '📝', 'Examen'], ['path', '🗺️', 'Ruta'], ['notebook', '✎', 'Libreta'], ['me', '📊', 'Yo']];
 let tab = 'home';
 function renderNav() {
   nav.innerHTML = `<div class="nav-in">${TABS.map(([id, ic, l]) => `<button data-tab="${id}" class="${tab === id ? 'on' : ''}"><span class="ic">${ic}</span>${l}</button>`).join('')}</div>`;
@@ -41,7 +41,7 @@ nav.addEventListener('click', (e) => { const b = e.target.closest('[data-tab]');
 function go(t) {
   tab = t; activeField = null; nav.style.display = t === 'notebook' ? 'none' : '';
   renderNav();
-  ({ home: renderHome, path: renderPath, notebook: renderNotebook, me: renderMe })[t]();
+  ({ home: renderHome, bank: renderBank, path: renderPath, notebook: renderNotebook, me: renderMe })[t]();
   window.scrollTo(0, 0);
 }
 
@@ -90,12 +90,14 @@ function renderHome() {
         <div class="row" style="margin-top:6px"><div style="flex:1">${bar(r, 'blue')}</div><span class="small">${pct(r)}</span><button class="btn sm" data-exam="${x.id}">Repasar</button></div></div>`; }).join('')}
       <div class="mute small" style="margin-top:8px">La barra muestra qué tan listo estás según los temas de cada evaluación.</div>
     </div>
+    ${(() => { const b = E.bankStats(); return `<div class="card"><div class="row between"><div><h3>📝 Examen diagnóstico</h3><div class="mute small">${b.answered}/${b.total} respondidas · ${b.errors} por repasar</div></div><button class="btn sm pri" id="go-bank">Abrir</button></div>${bar(b.answered ? b.ok / b.total : 0, 'blue')}</div>`; })()}
     <div class="card"><div class="row between"><div><h3>🧩 Retos de lógica</h3><div class="mute small">Nivel ${st.reason.level} de 6 · series, figuras, balanzas, geometría…</div></div><button class="btn sm pri" id="go-reason">Jugar</button></div></div>
     <div class="card install" id="install"><div class="row between" style="width:100%"><div><b>📲 Instalar la app</b><div class="mute small">Ábrela como app y úsala sin internet</div></div><button class="btn sm pri" id="do-install">Instalar</button></div></div>
   </div>`;
   if (deferredInstall) $('#install').classList.add('show');
   $('#go-train').onclick = () => startSession({ kind: 'daily' });
   $('#go-reason').onclick = () => startSession({ kind: 'reason' });
+  $('#go-bank').onclick = () => go('bank');
   $('#tren').onchange = (e) => { st.settings.tren = e.target.checked; E.save(); toast(e.target.checked ? '🚆 Modo tren: solo ejercicios mentales' : '✏️ Modo normal: incluye ejercicios con lápiz'); };
   app.querySelectorAll('[data-exam]').forEach((b) => (b.onclick = () => startSession({ kind: 'exam', exam: b.dataset.exam })));
   app.querySelectorAll('[data-topic]').forEach((b) => (b.onclick = () => startSession({ kind: 'topic', topic: b.dataset.topic })));
@@ -151,13 +153,21 @@ function startSession(opts) {
   const st = E.load();
   P = { session: { ...opts, tren: st.settings.tren && opts.kind !== 'topic' ? true : opts.kind === 'reason' ? false : st.settings.tren, seen: new Set() }, count: 0, ok: 0, streak: 0, startN: E.day().n, startOk: E.day().ok, errs: {} };
   if (opts.kind === 'topic') P.session.tren = false;
+  if (opts.kind === 'bank') {
+    P.session.queue = E.bankQueue(opts.mode, opts.tema); P.session.total = P.session.queue.length; P.session.sim = opts.mode === 'sim';
+    P.simRes = []; P.t0Session = Date.now();
+    if (!P.session.total) { toast('No hay preguntas en esta lista'); P = null; go('bank'); return; }
+  }
   nav.style.display = 'none';
   const firstTopic = opts.kind === 'topic' ? opts.topic : opts.kind === 'daily' ? E.currentTopic() : null;
   if (firstTopic && !E.tstate(firstTopic).lesson) { renderPracticeShell(); showLesson(firstTopic, () => nextQ()); }
   else { renderPracticeShell(); nextQ(); }
 }
 function endSession() {
+  if (P && P.session.sim) return simSummary();
+  const back = P && P.session.kind === 'bank' ? 'bank' : 'home';
   const d = E.day(); const n = d.n - P.startN, ok = d.ok - P.startOk;
+  if (P.timer) clearInterval(P.timer);
   P = null; activeField = null;
   if (n > 0) {
     const errs = summaryErrs(n);
@@ -165,7 +175,19 @@ function endSession() {
       <div class="grid2"><div class="stat"><div class="v">${ok}/${n}</div><div class="l">correctas</div></div><div class="stat"><div class="v">${pct(ok / n)}</div><div class="l">precisión</div></div></div>
       ${errs}<button class="btn pri block" data-close style="margin-top:14px">Listo</button>`);
   }
-  go('home');
+  go(back);
+}
+function simSummary() {
+  if (P.timer) clearInterval(P.timer);
+  const R = P.simRes; const ok = R.filter((x) => x.ok).length; const mins = Math.round((Date.now() - P.t0Session) / 60000);
+  const secs = {}; R.forEach((x) => { secs[x.sec] = secs[x.sec] || [0, 0]; secs[x.sec][1]++; if (x.ok) secs[x.sec][0]++; });
+  const wrong = R.filter((x) => !x.ok);
+  P = null; activeField = null;
+  const mm = modal(`<div class="celebrate"><div class="em">${ok >= 45 ? '🏆' : ok >= 30 ? '💪' : '📚'}</div><h2>Simulacro: ${ok}/${R.length}</h2><p class="mute">${mins} min${R.length < 60 ? ` · respondiste ${R.length} de 60` : ''}</p></div>
+    ${Object.entries(secs).map(([k, [a, b]]) => `<div class="tbar"><span>${k}</span>${bar(a / b, 'thin blue')}<span class="small">${a}/${b}</span></div>`).join('')}
+    ${wrong.length ? `<p class="mute small" style="margin-top:10px">Fallaste: ${wrong.map((x) => '#' + x.id).join(', ')}. Ya están en <b>Repasar errores</b>, con la explicación de cada una.</p><button class="btn pri block" id="sim-rev">🔁 Repasar mis errores ahora</button>` : ''}
+    <button class="btn block ghost" data-close style="margin-top:6px">Cerrar</button>`, { onClose: () => go('bank') });
+  const rv = $('#sim-rev', mm.el); if (rv) rv.onclick = () => { mm.el.remove(); startSession({ kind: 'bank', mode: 'errors' }); };
 }
 function summaryErrs(n) {
   const L = E.load().log.slice(-n); const c = {};
@@ -188,6 +210,11 @@ function updateTop() {
   if (P.session.kind === 'daily') html = `${bar(Math.min(1, d.n / goal))}<div class="mute small" style="margin-top:3px;text-align:center">${d.n}/${goal} hoy${d.approved.length ? ' · ✅ tema aprobado' : ''}</div>`;
   else if (P.session.kind === 'topic') { const m = E.mastery(P.session.topic); html = `${bar(m.pct, 'amber')}<div class="mute small" style="margin-top:3px;text-align:center">${E.TOPIC[P.session.topic].name}: ${m.score}/8</div>`; }
   else if (P.session.kind === 'exam') { const ex = E.EXAMS.find((x) => x.id === P.session.exam); html = `${bar(E.examReadiness(ex), 'blue')}<div class="mute small" style="margin-top:3px;text-align:center">Repaso ${ex.name}</div>`; }
+  else if (P.session.kind === 'bank') {
+    const done = P.session.total - P.session.queue.length;
+    const el = Math.floor((Date.now() - P.t0Session) / 1000);
+    html = `${bar(done / P.session.total, 'blue')}<div class="mute small" style="margin-top:3px;text-align:center">${P.session.sim ? `Simulacro · ${done}/${P.session.total} · ⏱ <span id="sim-t">${Math.floor(el / 60)}:${String(el % 60).padStart(2, '0')}</span>` : `Examen diagnóstico · ${done}/${P.session.total}`}</div>`;
+  }
   else { const st2 = E.load(); html = `${bar(st2.reason.hist.slice(-10).reduce((a, b) => a + b, 0) / 7, 'amber')}<div class="mute small" style="margin-top:3px;text-align:center">Lógica · nivel ${st2.reason.level}</div>`; }
   $('#p-bar').innerHTML = html;
   $('#p-fire').innerHTML = P.streak >= 2 ? `🔥${P.streak}` : '';
@@ -198,19 +225,26 @@ function nextQ(sameVariant) {
     if (sameVariant && P.prob && !P.prob.isReason) prob = E.makeProblem(P.prob.topic, { variant: P.prob.variant });
     else prob = E.nextProblem(P.session);
   } catch (e) { console.error(e); prob = E.makeReason(); }
+  if (!prob) {
+    if (P.session.sim) return simSummary();
+    const mm = modal(`<div class="celebrate"><div class="em">✅</div><h2>¡Terminaste esta tanda!</h2><p class="mute">Lo que fallaste quedó en "Repasar errores".</p></div><button class="btn pri block" data-close>Listo</button>`, { onClose: () => endSession() });
+    void mm; return;
+  }
+  if (P.session.sim && !P.timer) P.timer = setInterval(() => { const t = $('#sim-t'); if (!t || !P) return; const el = Math.floor((Date.now() - P.t0Session) / 1000); t.textContent = `${Math.floor(el / 60)}:${String(el % 60).padStart(2, '0')}`; }, 1000);
   P.prob = prob; P.t0 = Date.now(); P.hints = 0; P.tries = 0; P.done = false; P.lines = [];
   updateTop();
   const tags = [`<span class="chip-tag acc">${ESC(prob.topicName)}</span>`, prob.mode === 'mental' ? '<span class="chip-tag">🧠 sin lápiz</span>' : '<span class="chip-tag amb">✏️ con lápiz</span>'];
   if (prob.isReason) tags.push(`<span class="chip-tag">nivel ${prob.level}</span>`);
+  if (prob.isBank) tags[1] = `<span class="chip-tag">${E.bstate(prob.bank.id).last === false ? '🔁 la fallaste antes' : E.bstate(prob.bank.id).n ? 'repaso' : 'nueva'}</span>`;
   $('#p-scroll').innerHTML = `<div class="qcard">
       <div class="qtags">${tags.join('')}</div>
       <div class="qtext">${prob.q}</div>
       ${prob.ill ? `<div class="ill">${prob.ill}</div>` : ''}
       ${prob.ans.type !== 'choice' ? `<div class="ansbox"><label>Tu respuesta${prob.unit ? ` (${prob.unit})` : ''}${prob.ans.type === 'set' ? ' · separa con ;' : prob.ans.type === 'sys' ? ' · ej.: x=3; y=2' : ''}</label><div id="ans"></div></div>
-      <div class="tools"><button class="btn" id="b-hint">💡 Pista</button><button class="btn" id="b-steps">✎ Mis pasos</button></div>` : '<div class="tools"><button class="btn" id="b-hint">💡 Pista</button></div>'}
+      <div class="tools"><button class="btn" id="b-hint">💡 Pista</button><button class="btn" id="b-steps">✎ Mis pasos</button></div>` : (P.session.sim ? '' : '<div class="tools"><button class="btn" id="b-hint">💡 Pista</button></div>')}
     </div>
     <div id="hints"></div><div id="steps-area"></div><div id="fb"></div>`;
-  $('#b-hint').onclick = showHint;
+  if ($('#b-hint')) $('#b-hint').onclick = showHint;
   if (prob.ans.type === 'choice') {
     $('#p-bottom').innerHTML = `<div class="choices">${prob.ans.opts.map((o, i) => `<button class="btn" data-c="${i}">${o}</button>`).join('')}</div>`;
     $('#p-bottom').querySelectorAll('[data-c]').forEach((b) => (b.onclick = () => submitChoice(+b.dataset.c)));
@@ -303,6 +337,20 @@ function submit(conf) {
 function submitChoice(i) {
   if (!P || P.done) return;
   const ok = i === P.prob.ans.correct;
+  if (P.session.sim) {
+    P.done = true;
+    E.record(P.prob, { ok, conf: null, hints: 0, ms: Date.now() - P.t0, choice: i });
+    P.simRes.push({ id: P.prob.bank.id, sec: P.prob.bank.sec, ok });
+    $('#p-bottom').querySelectorAll('[data-c]').forEach((b, k) => { b.disabled = true; if (k === i) b.style.borderColor = 'var(--acc)'; });
+    setTimeout(() => { if (P) nextQ(); }, 250);
+    return;
+  }
+  if (P.prob.isBank) {
+    P.choice = i;
+    $('#p-bottom').querySelectorAll('[data-c]').forEach((b, k) => { b.disabled = true; if (k === P.prob.ans.correct) b.style.borderColor = 'var(--green)'; else if (k === i) b.style.borderColor = 'var(--red)'; });
+    const why = P.prob.trapFor(i);
+    return finish({ ok, conf: null, choice: i }, ok ? { status: 'ok' } : { status: 'bad', msg: why ? `<b>Tu error:</b> ${why.replace(/</g, '&lt;')}` : 'Esa opción no es la correcta. Revisa los pasos de abajo.' });
+  }
   $('#p-bottom').querySelectorAll('[data-c]').forEach((b, k) => { b.disabled = true; if (k === P.prob.ans.correct) b.style.borderColor = 'var(--green)'; else if (k === i) b.style.borderColor = 'var(--red)'; });
   finish({ ok, conf: null }, ok ? { status: 'ok' } : { status: 'bad', msg: 'No es esa.' });
 }
@@ -310,13 +358,13 @@ function finish(res, r) {
   const prob = P.prob; P.done = true;
   const ms = Date.now() - P.t0;
   const err = !res.ok ? (r && r.trap && r.trap.err) || (prob.isReason ? null : null) : null;
-  const ap = E.record(prob, { ok: res.ok, conf: res.conf, hints: P.hints, ms, err });
+  const ap = E.record(prob, { ok: res.ok, conf: res.conf, hints: P.hints, ms, err, choice: res.choice });
   P.count++; if (res.ok) { P.ok++; P.streak++; } else P.streak = 0;
   if (P.field) P.field.el.className = `mf ${res.ok ? 'ok' : 'bad'}`;
   updateTop();
   const ansH = answerHTML(prob);
   const steps = (prob.steps || []).map((s) => ({ html: s.html, note: s.note }));
-  const explain = `${steps.length ? V.chain(steps) : ''}${prob.viz ? `<div class="ill">${prob.viz}</div>` : ''}`;
+  const explain = `${steps.length ? V.chain(steps) : ''}${prob.viz ? `<div class="ill">${prob.viz}</div>` : ''}${prob.extra || ''}`;
   if (res.ok) {
     const praise = ['¡Correcto!', '¡Bien!', '¡Exacto!', '¡Eso es!', '¡Muy bien!'][Math.floor(Math.random() * 5)];
     showFb('ok', `<div class="fb-h">✅ ${praise} ${P.streak >= 3 ? `<span class="small">🔥 ${P.streak} seguidas</span>` : ''}</div>
@@ -336,7 +384,8 @@ function finish(res, r) {
       <div style="margin-top:10px"><b>Paso a paso:</b></div>${explain}`);
   }
   // barra inferior
-  $('#p-bottom').innerHTML = `<div class="nextbar">${!res.ok && !prob.isReason ? '<button class="btn" id="b-same">🔁 Otro parecido</button>' : ''}<button class="btn pri" id="b-next">Siguiente →</button></div>`;
+  if (prob.isBank && res.choice != null) { const tr = $(`#fb [data-trap="${res.choice}"]`); if (tr) tr.style.color = 'var(--red)'; }
+  $('#p-bottom').innerHTML = `<div class="nextbar">${!res.ok && !prob.isReason && !prob.isBank ? '<button class="btn" id="b-same">🔁 Otro parecido</button>' : ''}<button class="btn pri" id="b-next">Siguiente →</button></div>`;
   $('#b-next').onclick = () => nextQ();
   const bs = $('#b-same'); if (bs) bs.onclick = () => nextQ(true);
   activeField = null;
@@ -356,6 +405,36 @@ function finish(res, r) {
   setTimeout(() => { const fb = $('#fb'); if (fb) fb.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 60);
 }
 function showFb(cls, html) { $('#fb').innerHTML = `<div class="fb ${cls}">${html}</div>`; if (cls !== 'alm') return; setTimeout(() => $('#fb').scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50); }
+
+// =============================================================
+// EXAMEN DIAGNÓSTICO (banco de 60 preguntas)
+// =============================================================
+async function renderBank() {
+  const { GLOSARIO, FORMULAS } = await import('./bank_diag.js');
+  const b = E.bankStats();
+  const temaRows = Object.entries(b.temas).map(([k, v]) => `<button class="tnode" data-tema="${ESC(k)}" style="padding:10px 12px"><span class="tb"><div class="row between"><span class="tn" style="font-size:.95rem">${ESC(k)}</span><span class="small mute">${v.ok}/${v.total}</span></div><div style="margin-top:5px">${bar(v.ok / v.total, 'thin')}</div></span></button>`);
+  const bySec = {}; Object.entries(b.temas).forEach(([k, v], i) => { (bySec[v.sec] = bySec[v.sec] || []).push(temaRows[i]); });
+  app.innerHTML = `<div class="view"><h1>Examen diagnóstico</h1><p class="mute">Las 60 preguntas de la evaluación diagnóstica de ESAN, explicadas desde cero.</p>
+    <div class="grid2" style="margin-bottom:14px">
+      <div class="stat"><div class="v">${b.answered}/${b.total}</div><div class="l">respondidas</div></div>
+      <div class="stat"><div class="v">${b.ok}</div><div class="l">correctas (último intento)</div></div>
+    </div>
+    <div class="card" style="display:flex;flex-direction:column;gap:10px">
+      <button class="btn pri block" id="bk-go">▶ ${b.answered < b.total ? 'Seguir con las que faltan' : 'Practicar otra vez'}</button>
+      <button class="btn block" id="bk-err" ${b.errors ? '' : 'disabled style="opacity:.5"'}>🔁 Repasar errores (${b.errors})</button>
+      <button class="btn block" id="bk-sim">⏱ Simulacro de 60 (sin ayuda, nota al final)</button>
+      <div class="mute small">Cada pregunta trae: la respuesta, qué significa el concepto, los pasos, la comprobación y por qué cada opción incorrecta está mal. Si fallas, te marco tu error. Estas preguntas también salen mezcladas en tu entrenamiento diario.</div>
+    </div>
+    ${Object.entries(b.secs).map(([sec, v]) => `<div class="unit-h">${sec} · ${v.ok}/${v.total}</div><div class="path">${(bySec[sec] || []).join('')}</div>`).join('')}
+    <div class="unit-h">Para consultar</div>
+    <details class="card"><summary><b>🔣 Glosario de símbolos</b></summary>${GLOSARIO.map(([s, d]) => `<div class="errrow"><b class="m" style="min-width:56px">${ESC(s)}</b><span style="flex:1;text-align:right">${ESC(d)}</span></div>`).join('')}</details>
+    <details class="card"><summary><b>📐 Fórmulas clave</b></summary>${FORMULAS.map(([t, f]) => `<div style="margin:10px 0"><div class="mute small">${ESC(t)}</div><div class="m" style="white-space:normal">${ESC(f)}</div></div>`).join('')}</details>
+  </div>`;
+  $('#bk-go').onclick = () => startSession({ kind: 'bank', mode: 'practice' });
+  $('#bk-err').onclick = () => b.errors && startSession({ kind: 'bank', mode: 'errors' });
+  $('#bk-sim').onclick = () => startSession({ kind: 'bank', mode: 'sim' });
+  app.querySelectorAll('[data-tema]').forEach((x) => (x.onclick = () => startSession({ kind: 'bank', mode: 'tema', tema: x.dataset.tema })));
+}
 
 // =============================================================
 // LIBRETA (calculadora paso a paso)
